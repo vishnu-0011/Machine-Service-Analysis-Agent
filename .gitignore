@@ -1,0 +1,17 @@
+# .gitignore for Python and project artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+*.log
+*.env
+.env*
+venv/
+chrome_langchain_db/
+.DS_Store
+.idea/
+.vscode/
+# Ollama model cache (if any)
+ollama_cache/
