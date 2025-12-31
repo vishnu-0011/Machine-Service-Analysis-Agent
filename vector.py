@@ -18,8 +18,8 @@ if add_documents:
     ids = []
     
     for i, row in df.iterrows():
-        # Use Problem_Type and Service_Status as content, others as metadata
-        page_content = f"{row['Problem_Type']} - {row['Service_Status']}"
+        # Include all relevant fields in page_content for better retrieval
+        page_content = f"Machine ID: {row['Machine_ID']}, Date: {row['Date']}, Problem: {row['Problem_Type']}, Status: {row['Service_Status']}, Cost: {row['Cost']}, Hours: {row['Hours']}"
         metadata = {
             "cost": row["Cost"],
             "hours": row["Hours"],
@@ -31,7 +31,7 @@ if add_documents:
             metadata=metadata,
             id=str(i)
         )
-        print(f"Adding document: {page_content} | Metadata: {metadata}")
+        # print(f"Adding document: {page_content} | Metadata: {metadata}")
         ids.append(str(i))
         documents.append(document)
         

@@ -2,64 +2,128 @@ from langchain_ollama.llms import OllamaLLM
 from langchain_core.prompts import ChatPromptTemplate
 from vector import retriever
 import pandas as pd
+import warnings
+
+# Suppress warnings for cleaner output
+warnings.filterwarnings("ignore")
 
 model = OllamaLLM(model="qwen3:4b")
 
-template = """
-You are an expert assistant for answering questions about machine maintenance and service records.
+# ------------------------------------------------------------------------------
+# 1. RAG SETUP (Qualitative / Specific Lookup)
+# ------------------------------------------------------------------------------
+rag_template = """
+You are a highly knowledgeable and precise assistant specializing in machine maintenance and service records. Your task is to answer questions using only the provided service records below.
 
-Here are some relevant machine service records:
+Instructions:
+- Use only the information from the records to answer. Do not make assumptions or fabricate details.
+- If the answer is not found in the records, clearly state: "The answer is not present in the provided records."
+- When possible, cite specific details (such as dates, machine IDs, problem types, costs, or service statuses) from the records in your answer.
+- If the question asks for a summary, provide a concise and accurate summary based on the records.
+- Format your answer in clear, complete sentences.
+
+Relevant machine service records:
 {reviews}
-
-Please answer the following question using only the information from the records above. If the answer is not present, say so clearly.
 
 Question: {question}
 """
-prompt = ChatPromptTemplate.from_template(template)
-chain = prompt | model
+rag_prompt = ChatPromptTemplate.from_template(rag_template)
+rag_chain = rag_prompt | model
 
+# ------------------------------------------------------------------------------
+# 2. PANDAS MEMORY LOADING
+# ------------------------------------------------------------------------------
 df = pd.read_csv("machine_service.csv")
 
-def fallback_answer(question):
-    # Fallback for frequency/statistics and record count questions
-    q = question.lower()
-    if ("how many" in q or "total number" in q or "count" in q) and ("record" in q or "service" in q):
-        count = len(df)
-        return f"There are {count} machine service records in the database."
-    if "most frequent" in q or "most common" in q:
-        counts = df["Problem_Type"].value_counts()
-        if not counts.empty:
-            most_common = counts.idxmax()
-            freq = counts.max()
-            return f"The most frequent problem type is '{most_common}' with {freq} occurrences."
-        else:
-            return "No problem types found in the data."
-    if ("sum" in q or "total" in q) and ("cost" in q or "service cost" in q):
-        total_cost = df["Cost"].sum()
-        return f"The sum of all service costs in the records is {total_cost:.2f}."
-    if ("average" in q or "mean" in q) and ("cost" in q or "service cost" in q):
-        avg_cost = df["Cost"].mean()
-        return f"The average service cost in the records is {avg_cost:.2f}."
-    if ("minimum" in q or "lowest" in q or "smallest" in q) and ("cost" in q or "service cost" in q):
-        min_cost = df["Cost"].min()
-        return f"The minimum service cost in the records is {min_cost:.2f}."
-    if ("maximum" in q or "highest" in q or "largest" in q) and ("cost" in q or "service cost" in q):
-        max_cost = df["Cost"].max()
-        return f"The maximum service cost in the records is {max_cost:.2f}."
-    return None
+# ------------------------------------------------------------------------------
+# 3. DYNAMIC PANDAS ANALYST (Quantitative / Aggregations)
+# ------------------------------------------------------------------------------
+def query_pandas_agent(question, dataframe):
+    """
+    Asks the LLM to generate python code to query the dataframe.
+    Executes the code and returns the result.
+    """
+    schema = dataframe.dtypes.to_string()
+    
+    analyst_template = f"""
+You are a Python Pandas expert.
+You have a pandas DataFrame named 'df' with the following columns and data types:
+{schema}
+
+User Question: {{question}}
+
+Write a snippet of Python code to calculate the answer.
+- Assign the final answer to a variable named `result`.
+- The answer should be a simple string, number, or list.
+- Use `df` directly.
+- ONLY output the Python code. No markdown, no explanations.
+- Handle potential empty data gracefully.
+"""
+    analyst_prompt = ChatPromptTemplate.from_template(analyst_template)
+    analyst_chain = analyst_prompt | model
+    
+    try:
+        # Generate Code
+        code_response = analyst_chain.invoke({"question": question})
+        
+        # Clean Code
+        cleaned_code = code_response.replace("```python", "").replace("```", "").strip()
+        
+        # Execution Context
+        local_context = {"df": dataframe, "pd": pd}
+        
+        # Execute
+        exec(cleaned_code, {}, local_context)
+        
+        # Retrieve result
+        answer = local_context.get("result", None)
+        if answer is not None:
+            return str(answer)
+        return None
+        
+    except Exception as e:
+        # Fail silently to allow fallback to RAG
+        return None
+
+# ------------------------------------------------------------------------------
+# 4. MAIN INTERACTION LOOP
+# ------------------------------------------------------------------------------
+print("\nSystem ready. Ask any question about the machine service records.")
 
 while True:
-    print("\n\n-------------------------------")
+    print("\n-------------------------------")
     question = input("Ask your question (q to quit): ")
-    print("\n\n")
-    if question == "q":
+    print("\n")
+    if question.lower() in ["q", "quit", "exit"]:
         break
 
-    reviews = retriever.invoke(question)
-    if not reviews:
-        fallback = fallback_answer(question)
-        if fallback:
-            print(fallback)
-            continue
-    result = chain.invoke({"reviews": reviews, "question": question})
-    print(result)
+    # HEURISTIC: Check if it's likely a data aggregation question
+    data_keywords = [
+        "how many", "count", "total", "sum", "average", "mean", "median",
+        "min", "max", "most", "least", "top", "bottom", "list", "which",
+        "trend", "cost", "hours", "compare", "frequency", "times", "percentage"
+    ]
+    
+    is_data_query = any(k in question.lower() for k in data_keywords)
+    answer_found = False
+    
+    # Strategy 1: Attempt Logic/Code Answer for Stats
+    if is_data_query:
+        # print("Analyzing data...")
+        pandas_result = query_pandas_agent(question, df)
+        if pandas_result:
+            print(f"Answer: {pandas_result}")
+            # If the answer is short/numeric, we might want to let the RAG elaborate, 
+            # but usually a direct stat answer is what the user wants.
+            answer_found = True
+    
+    # Strategy 2: Attempt RAG for specific details or if Analyst failed
+    if not answer_found:
+        # print("Searching records...")
+        reviews = retriever.invoke(question)
+        if reviews:
+            formatted_reviews = "\n\n".join([d.page_content for d in reviews])
+            rag_response = rag_chain.invoke({"reviews": formatted_reviews, "question": question})
+            print(rag_response)
+        else:
+            print("I could not find relevant information in the records.")
