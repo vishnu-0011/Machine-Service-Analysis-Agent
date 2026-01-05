@@ -19,8 +19,9 @@ Instructions:
 - Use only the information from the records to answer. Do not make assumptions or fabricate details.
 - If the answer is not found in the records, clearly state: "The answer is not present in the provided records."
 - When possible, cite specific details (such as dates, machine IDs, problem types, costs, or service statuses) from the records in your answer.
+- **Reasoning Process**: You must explain your reasoning step-by-step. Specify which records you used to derive the answer and why.
 - If the question asks for a summary, provide a concise and accurate summary based on the records.
-- Format your answer in clear, complete sentences.
+- Format your answer in clear, detailed, and understandable sentences.
 
 Relevant machine service records:
 {reviews}
@@ -29,6 +30,23 @@ Question: {question}
 """
 rag_prompt = ChatPromptTemplate.from_template(rag_template)
 rag_chain = rag_prompt | model
+
+# ------------------------------------------------------------------------------
+# 1.1 SYNTHESIS SETUP (For Data Query Results)
+# ------------------------------------------------------------------------------
+synthesis_template = """
+You are a helpful data assistant.
+The user asked: "{question}"
+A database query returned this result: "{result}"
+
+Please provide a clear, detailed, and understandable answer to the user.
+- Incorporate the result naturally into a sentence.
+- Explain what this result likely represents based on the question (e.g., if it's a count, say "The database shows a total of X...").
+- Provide a brief reasoning or context of what the result implies if applicable.
+- Ensure the answer is complete and not just a raw number.
+"""
+synthesis_prompt = ChatPromptTemplate.from_template(synthesis_template)
+synthesis_chain = synthesis_prompt | model
 
 # ------------------------------------------------------------------------------
 # 2. PANDAS MEMORY LOADING
@@ -54,10 +72,11 @@ User Question: {{question}}
 
 Write a snippet of Python code to calculate the answer.
 - Assign the final answer to a variable named `result`.
-- The answer should be a simple string, number, or list.
+- The answer should be a simple string, number, list, or a string representation of a table.
 - Use `df` directly.
 - ONLY output the Python code. No markdown, no explanations.
 - Handle potential empty data gracefully.
+- If the answer involves a list of items with details, formatting them as a readable string or list of dictionaries is preferred.
 """
     analyst_prompt = ChatPromptTemplate.from_template(analyst_template)
     analyst_chain = analyst_prompt | model
@@ -65,7 +84,7 @@ Write a snippet of Python code to calculate the answer.
     try:
         # Generate Code
         code_response = analyst_chain.invoke({"question": question})
-        
+            
         # Clean Code
         cleaned_code = code_response.replace("```python", "").replace("```", "").strip()
         
@@ -82,7 +101,8 @@ Write a snippet of Python code to calculate the answer.
         return None
         
     except Exception as e:
-        # Fail silently to allow fallback to RAG
+        print(f"Error executing pandas agent: {e}")
+        # Fail silently to allow fallback to RAG (or maybe not silent anymore)
         return None
 
 # ------------------------------------------------------------------------------
@@ -112,7 +132,9 @@ while True:
         # print("Analyzing data...")
         pandas_result = query_pandas_agent(question, df)
         if pandas_result:
-            print(f"Answer: {pandas_result}")
+            # Synthesize a detailed response using the result
+            synthesis_response = synthesis_chain.invoke({"question": question, "result": pandas_result})
+            print(f"Answer: {synthesis_response}")
             # If the answer is short/numeric, we might want to let the RAG elaborate, 
             # but usually a direct stat answer is what the user wants.
             answer_found = True
